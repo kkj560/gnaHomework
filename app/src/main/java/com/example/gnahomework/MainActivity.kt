@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.core.app.AppOpsManagerCompat.MODE_ALLOWED
 import com.example.gnahomework.ui.theme.GnaHomeworkTheme
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
 
 
 @AndroidEntryPoint
@@ -63,7 +62,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startService() {
-        Timber.d("start Service call")
         Intent(this, MyService::class.java).also { intent ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)

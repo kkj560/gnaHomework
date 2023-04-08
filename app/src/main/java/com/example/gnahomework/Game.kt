@@ -29,12 +29,17 @@ data class Game(
     @SerializedName("icon") @Expose var iconUri: String
 )
 
-data class GameData(val appName: String, val packageName: String, val iconUri: String, val progress: Int)
+data class GameData(
+    val appName: String,
+    val packageName: String,
+    val iconUri: String,
+    val progress: Int
+)
 
 @Composable
 fun game(
     game: GameData
-){
+) {
     val context = LocalContext.current
     val intentToEnterStore = remember {
         Intent(
@@ -44,8 +49,9 @@ fun game(
     }
 
     Row(modifier = Modifier.fillMaxWidth().padding(4.dp).clickable {
+        context.startService(Intent(context, MyService::class.java).putExtra("selectedPackageName", "${game.packageName}"))
         context.startActivity(intentToEnterStore)
-    }){
+    }) {
         Image(
             painter = rememberAsyncImagePainter(
                 ImageRequest.Builder(LocalContext.current)
@@ -58,11 +64,11 @@ fun game(
             modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp))
         )
 
-        Column(modifier = Modifier.padding(start = 8.dp)){
+        Column(modifier = Modifier.padding(start = 8.dp)) {
             Text("${game.appName}")
-            if(game.progress != -1 && game.progress != 100){
-                Row(){
-                    LinearProgressIndicator(progress = game.progress/100f)
+            if (game.progress != -1 && game.progress != 100) {
+                Row() {
+                    LinearProgressIndicator(progress = game.progress / 100f)
                     Text("${game.progress}%")
                 }
 

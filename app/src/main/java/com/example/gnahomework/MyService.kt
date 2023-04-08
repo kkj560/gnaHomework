@@ -7,7 +7,6 @@ import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.os.*
 import androidx.compose.ui.graphics.Color
@@ -15,7 +14,6 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.AppOpsManagerCompat
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
 import java.util.*
 import javax.inject.Inject
 
@@ -27,24 +25,21 @@ class MyService() : Service() {
     lateinit var repository: GameDataRepository
 
     private lateinit var usageStatsManager: UsageStatsManager
-    private val br = MyReceiver()
+    private lateinit var packageInstaller: PackageInstaller
+
+    var selectedPackageName = ""
+    var isDownloading = false
+    var isHandlerRunning = false
+    val context = this
 
     override fun onCreate() {
         super.onCreate()
 
-        if (checkUsageStatsPermission())
+        packageInstaller = this.packageManager.packageInstaller
+        if (usagePermissionCheck())
             usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_PACKAGE_ADDED)
-            addAction(Intent.ACTION_PACKAGE_REMOVED)
-            addAction(Intent.ACTION_PACKAGE_REPLACED)
-            addAction(PackageInstaller.ACTION_SESSION_UPDATED)
-        }
-
-        registerReceiver(br, filter)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (overlayPermissionCheck() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val builder = NotificationCompat.Builder(this, "default")
             builder.setSmallIcon(R.mipmap.sym_def_app_icon)
             builder.setContentTitle("Foreground Service")
@@ -56,7 +51,8 @@ class MyService() : Service() {
             builder.setContentIntent(pendingIntent) // 알림 클릭 시 이동
 
             // 알림 표시
-            val notificationManager = this.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val notificationManager =
+                this.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 notificationManager.createNotificationChannel(
                     NotificationChannel(
@@ -72,20 +68,35 @@ class MyService() : Service() {
         }
     }
 
-    private fun checkUsageStatsPermission(): Boolean {
+    private fun usagePermissionCheck(): Boolean {
         val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode =
             appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
         return mode == AppOpsManagerCompat.MODE_ALLOWED
     }
+    private fun overlayPermissionCheck(): Boolean {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = appOps.checkOpNoThrow(
+            AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+            Process.myUid(),
+            packageName
+        )
+
+        return mode == AppOpsManagerCompat.MODE_ALLOWED
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (checkUsageStatsPermission()) {
+        // packageName을 intent로 받는다.
+        val fromIntentPackagename = intent?.getStringExtra("selectedPackageName")
+        if (!fromIntentPackagename.isNullOrEmpty())
+            selectedPackageName = fromIntentPackagename
+
+        if (usagePermissionCheck() && !isHandlerRunning) {
+            isHandlerRunning = true
             val handler = Handler(Looper.getMainLooper())
             handler.post(object : Runnable {
                 override fun run() {
                     queryUsageEvents()
-                    //checkDownloadStatus()
                     handler.postDelayed(this, 1000) // Query every second
                 }
             })
@@ -97,10 +108,9 @@ class MyService() : Service() {
         val calendar = Calendar.getInstance()
         calendar.add(Calendar.SECOND, -1)
         val startTime = calendar.timeInMillis
-
         val endTime = System.currentTimeMillis()
-
         val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
+
         while (usageEvents.hasNextEvent()) {
             val event = UsageEvents.Event()
             usageEvents.getNextEvent(event)
@@ -110,62 +120,19 @@ class MyService() : Service() {
 
     @SuppressLint("Range")
     private fun onUsageEvent(event: UsageEvents.Event?) {
+        val isForeGroundEvent =
+            if (BuildConfig.VERSION_CODE >= 29) event?.eventType == UsageEvents.Event.ACTIVITY_RESUMED else event?.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND;
 
-        val isForeGroundEvent = if(BuildConfig.VERSION_CODE >= 29) event?.eventType == UsageEvents.Event.ACTIVITY_RESUMED else event?.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND;
-
-        if (isForeGroundEvent && event?.packageName == "com.android.vending") {
-            // Play Store app has been brought to the foreground, check if a download is in progress
-            var progress = 0
-            var packageName: String? = ""
-
-            val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-
-            val activeDownloads = DownloadManager.Query().apply {
-                setFilterByStatus(DownloadManager.STATUS_RUNNING)
-            }
-
-            val cursor = downloadManager.query(activeDownloads)
-            Timber.d("cursor count - ${cursor.count}")
-            while(cursor.moveToNext()){
-                val bytesDownloaded =
-                    cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                val bytesTotal =
-                    cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                progress = (bytesDownloaded.toFloat() / bytesTotal.toFloat() * 100).toInt()
-
-                packageName = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_URI))?.substringAfterLast("=")
-
-                Timber.d("packageName : $packageName, progress : $progress")
-                repository.handleProgress(packageName, progress)
-            }
-            cursor.close()
+        if (!isDownloading && selectedPackageName.isNotEmpty() && isForeGroundEvent && event?.packageName == "com.android.vending") {
+            // Play Store app has been brought to the foreground, register PackageInstall.SessionCallback()
+            isDownloading = true
+            val params =
+                PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            params.setAppPackageName(selectedPackageName)
+            val sessionId = packageInstaller.createSession(params)
+            packageInstaller.registerSessionCallback(MySessionCallback())
+            packageInstaller.openSession(sessionId)
         }
-    }
-
-    @SuppressLint("Range")
-    private fun checkDownloadStatus(){
-        var progress = 0
-        var packageName: String? = ""
-
-        val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val activeDownloads = DownloadManager.Query().apply {
-            setFilterByStatus(DownloadManager.STATUS_RUNNING)
-        }
-        val cursor = downloadManager.query(activeDownloads)
-        Timber.d("cursor count - ${cursor.count}")
-        while(cursor.moveToNext()){
-            val bytesDownloaded =
-                cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-            val bytesTotal =
-                cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            progress = (bytesDownloaded.toFloat() / bytesTotal.toFloat() * 100).toInt()
-
-            packageName = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_URI))?.substringAfterLast("=")
-
-            Timber.d("packageName : $packageName, progress : $progress")
-            repository.handleProgress(packageName, progress)
-        }
-        cursor.close()
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -175,6 +142,47 @@ class MyService() : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(br)
+    }
+
+    inner class MySessionCallback() : PackageInstaller.SessionCallback() {
+
+        var displayActivityFlag = false
+        override fun onCreated(sessionId: Int) {
+            //TODO("Not yet implemented")
+        }
+
+        override fun onBadgingChanged(sessionId: Int) {
+            //TODO("Not yet implemented")
+        }
+
+        override fun onActiveChanged(sessionId: Int, active: Boolean) {
+            if (!active) {
+                // Installation has been canceled
+                repository.handleProgress(selectedPackageName, -1)
+                isDownloading = false
+            }
+        }
+
+        override fun onProgressChanged(sessionId: Int, progress: Float) {
+            // Display MainActivity once.
+            if(!displayActivityFlag){
+                displayActivityFlag = true
+                val intent = Intent(context, MainActivity::class.java)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                startActivity(intent)
+            }
+            repository.handleProgress(selectedPackageName, (progress * 100).toInt())
+        }
+
+        override fun onFinished(sessionId: Int, success: Boolean) {
+            if(success){
+                repository.handleProgress(selectedPackageName, 100)
+            }else{
+                repository.handleProgress(selectedPackageName, -1)
+            }
+
+            packageInstaller.unregisterSessionCallback(this)
+            isDownloading = false
+        }
     }
 }

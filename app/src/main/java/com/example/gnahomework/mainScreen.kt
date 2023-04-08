@@ -25,7 +25,7 @@ import androidx.lifecycle.LifecycleOwner
 fun mainScreen(
     isUsagePermitted: () -> Boolean = { false },
     isOverlayPermitted: () -> Boolean = { false },
-    startService : () -> Unit = {},
+    startService: () -> Unit = {},
     gameList: List<GameData>? = null
 ) {
     val context = LocalContext.current
@@ -51,7 +51,8 @@ fun mainScreen(
                     }
                 }
             }
-            else -> { /* other stuff */ }
+            else -> { /* other stuff */
+            }
         }
     }
 
@@ -62,7 +63,7 @@ fun mainScreen(
                 state = rememberLazyListState(),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(gameList) { it ->
+                items(gameList, key = { "${it.packageName}_${it.progress}"}) { it ->
                     game(it)
                 }
             }

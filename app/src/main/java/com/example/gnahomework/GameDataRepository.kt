@@ -37,14 +37,14 @@ class GameDataRepositoryImpl @Inject constructor(application: Application) : Gam
 
     override fun handleProgress(packageName: String?, progress: Int) {
         // Send the message
-        Timber.d("In handleProgress")
+        Timber.d("In handleProgress packageName : $packageName, progress : $progress")
         val updatedList = games.value?.toMutableList()
         val index = updatedList?.indexOf(updatedList?.find { it.packageName == packageName })
 
         if (index != null && index != -1) {
             updatedList?.get(index)
                 ?.let {
-                    if(it.progress < progress && progress != 0)
+                    if (it.progress < progress || progress == -1)
                         updatedList?.set(index, it.copy(progress = progress))
                 }
             games.postValue(updatedList)
